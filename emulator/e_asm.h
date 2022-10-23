@@ -31,8 +31,7 @@ static const std::map<std::string, EOpcodeDesc> instr_to_opcode = {
 	{ "adc"  , FIND_OPCODE_BY_NAME("adc") },
 	{ "sbb"  , FIND_OPCODE_BY_NAME("sbb") },
 	{ "cmp"  , FIND_OPCODE_BY_NAME("cmp") },
-	{ "movr" , FIND_OPCODE_BY_NAME("movr") },
-	{ "movo" , FIND_OPCODE_BY_NAME("movo") }
+	{ ".fill", {}}
 };
 
 static const std::map<std::string, u32> reg_name_to_reg_index = {
@@ -119,7 +118,7 @@ str_replace(
 }
 
 [[ no_discard ]] u32
-emu_asm_operand(
+emu_asm_offset(
 	const std::string& s
 )
 {
@@ -216,83 +215,74 @@ emu_asm(
 			return FAILURE;
 		}
 
+		const auto get_arg = [&](const std::string& arg) -> std::pair<u32, bool> {
+			if (std::regex_match(arg, std::regex(R"(\$\w+)")))
+			{
+				// label
+				return { compiller_data.labels_[arg], true };
+			}
+			else if (std::regex_match(arg, std::regex(R"(r[0-8])")))
+			{
+				// register
+				return { reg_name_to_reg_index.at(arg), false};
+			}
+			
+			LOG("Arg is not valid: %s", arg.c_str());
+			ASSERT(false && "Argument is not valid!");
+			return { 0, false };
+		};
+
+		// a b r
 		EInstruction compilled_instruction = {};
 
-		u32 opcode = it->second.opcode_;
-		switch (it->second.opcode_type_)
+		if (opcode_str == ".fill")
 		{
-			case OT_NONE: {
-				compilled_instruction
-					= EInstruction::create_ra_rb_rr(
-						opcode,
-						0,
-						0,
-						0
-					);
-			}break;
-			case OT_REG: {
-				const std::string rr_str = i[1];
-				const std::string ra_str = i[2];
-				compilled_instruction
-					= EInstruction::create_ra_rb_rr(
-						opcode,
-						0,
-						0,
-						reg_name_to_reg_index.at(rr_str)
-					);
+			auto type = i[1];
+			auto value = emu_asm_offset(i[2]);
+
+			if (type == "dec")
+				compilled_instruction.set_value(value);
+			else
+				ASSERT(false && "Bad value desc!");
+		}
+		else
+		{
+
+			u32 opcode = it->second.opcode_;
+			switch (it->second.args_type_)
+			{
+			case EARGS_NONE: {
+				compilled_instruction = EInstruction::create_ra_rb_rr(opcode, 0, 0, 0);
 			} break;
-			case OT_REG_REG: {
-				const std::string rr_str = i[1];
-				const std::string ra_str = i[2];
-				compilled_instruction
-					= EInstruction::create_ra_rb_rr(
-						opcode,
-						reg_name_to_reg_index.at(ra_str),
-						0,
-						reg_name_to_reg_index.at(rr_str)
-					);
+			case EARGS_A: {
+				auto ra = get_arg(i[1]);
+
+				compilled_instruction = EInstruction::create_ra_rb_rr(opcode, ra.first, 0, 0, ra.second, 0);
 			} break;
-			case OT_REG_REG_REG: {
-				auto rr_str = i[1];
-				auto ra_str = i[2];
-				auto rb_str = i[3];
-				compilled_instruction 
-					= EInstruction::create_ra_rb_rr(
-						opcode,
-						reg_name_to_reg_index.at(ra_str),
-						reg_name_to_reg_index.at(rb_str),
-						reg_name_to_reg_index.at(rr_str)
-					);
+			case EARGS_A_B: {
+				auto ra = get_arg(i[1]);
+				auto rb = get_arg(i[2]);
+
+				compilled_instruction = EInstruction::create_ra_rb_rr(opcode, ra.first, rb.first, 0, ra.second, rb.second);
 			} break;
-			case OT_REG_OPERAND: {
-				auto rr_str      = i[1];
-				auto operand_str = i[2];
-				compilled_instruction
-					= EInstruction::create_ra_operand_rr(
-						opcode,
-						0,
-						emu_asm_operand(operand_str),
-						reg_name_to_reg_index.at(rr_str)
-					);
+			case EARGS_A_B_R: {
+				auto ra = get_arg(i[1]);
+				auto rb = get_arg(i[2]);
+				auto rr = get_arg(i[3]);
+
+				compilled_instruction = EInstruction::create_ra_rb_rr(opcode, ra.first, rb.first, rr.first, ra.second, rb.second);
 			} break;
-			case OT_REG_REG_OPERAND: {
-				auto rr_str = i[1];
-				auto ra_str = i[1];
-				auto operand_str = i[2];
-				compilled_instruction
-					= EInstruction::create_ra_operand_rr(
-						opcode,
-						reg_name_to_reg_index.at(ra_str),
-						emu_asm_operand(operand_str),
-						reg_name_to_reg_index.at(rr_str)
-					);
+			case EARGS_A_B_OFFSET: {
+				auto ra = get_arg(i[1]);
+				auto rb = get_arg(i[2]);
+				auto offset = emu_asm_offset(i[3]);
+
+				compilled_instruction = EInstruction::create_ra_rb_offset(opcode, ra.first, rb.first, offset, ra.second, rb.second);
 			} break;
-			case _OT_INVAL: {
-				LOG("Not impl: %s", i_line.c_str());
-				ASSERT(false && "opcode not fully implemented");
-			} break;
-			default:
+			default: {
 				ASSERT(false && "Opcode Type is not found!");
+			} break;
+			}
 		}
 
 		compiller_data.compilled_code[code_line] = compilled_instruction;
@@ -302,11 +292,11 @@ emu_asm(
 			ASSERT(false && "too much code!");
 	}
 
-	/*LOG("Compilled: ");
+	LOG("Compilled: ");
 	for (size_t i = 0; i < ARRAY_SIZE(compiller_data.compilled_code); i++)
 	{
 		LOG("%s", std::bitset<32>(compiller_data.compilled_code[i].get_value()).to_string().c_str());
-	}*/
+	}
 	
 
 	return SUCCESS;

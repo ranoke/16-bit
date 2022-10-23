@@ -10,14 +10,12 @@ main(
 	// 	 return -1;
 
 	EAsmCompillerData compiller_data = {};
-	emu_asm(compiller_data, R"(				
-		movo r0 3
-		movo r1 7
-		movr r7 r0
-		imul r0 r0 r0
-		and r7 r7 r1
-		shr r1 r1 r0
-		halt)");
+	emu_asm(compiller_data, R"(
+		lw r0 $first 0
+		inc r0
+		halt
+		$first .fill dec 10
+)");
 
 	EState state = {};
 

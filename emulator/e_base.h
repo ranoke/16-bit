@@ -43,6 +43,7 @@
 #include <cassert>
 
 #define RAM_SIZE 4096
+#define REGISTERS_COUNT 9
 
 #define ARRAY_SIZE(x) (sizeof(x)/sizeof(x[0]))
 #define CONCAT(x, y) x ## y
@@ -51,8 +52,10 @@
 #define IN_RANGE(val, min, max) (min < val && val < max)
 #define IN_RANGE_E(val, min, max) (min <= val && val <= max)
 
+#define BITS_12_MASK (0b1111'1111'1111)
 #define BITS_16_MASK (0b1111'1111'1111'1111)
 #define BITS_24_MASK (0b1111'1111'1111'1111'1111'1111)
+#define BITS_26_MASK (0b0011'1111'1111'1111'1111'1111'1111)
 #define BITS_MASKED_COPY(B, M) ((B) & (M))
 #define BITS_MASKED_COPY_DEST_UNCHENGED(OUT, B, M) (((B) & (M)) | ((OUT) & ~(M)))
 
@@ -92,53 +95,47 @@ enum ECommand
 	E_ADC,
 	E_SBB,
 	E_CMP,
-	E_MOVR,    // move contents to rr from ra
-	E_MOVO,    // move contents to rr from operand
 	__ECOMMAND_MAX,
 	__ECOMMAND_LAST = __ECOMMAND_MAX - 1
 };
 
-enum OpcodeType
+enum EArgsType
 {
-	_OT_INVAL,
-	OT_NONE,
-	OT_REG,
-	OT_REG_REG,
-	OT_REG_REG_REG,
-	OT_REG_OPERAND,
-	OT_REG_REG_OPERAND,
-	OT_LABEL
+	EARGS_INVAL,
+	EARGS_NONE,
+	EARGS_A,
+	EARGS_A_B,
+	EARGS_A_B_R,
+	EARGS_A_B_OFFSET
 };
 
 struct EOpcodeDesc
 {
 	ECommand opcode_;
-	OpcodeType opcode_type_;
+	EArgsType args_type_;
 	std::string_view asm_name_;
 };
 
 static constexpr EOpcodeDesc opcode_descriptions[] = {
-	{ E_ADD,  OT_REG_REG_REG,     "add"  },
-	{ E_NAND, OT_REG_REG_REG,     "nand" },
-	{ E_LW,   OT_REG_OPERAND,     "lw"   },
-	{ E_SW,   OT_REG_OPERAND,     "sw"   },
-	{ E_BEQ,  OT_REG_REG_OPERAND, "beq"  },
-	{ E_JALR, OT_REG_REG,         "jalr" },
-	{ E_HALT, OT_NONE,            "halt" },
-	{ E_NOOP, OT_NONE,            "noop" },
-	{ E_INC,  OT_REG,             "inc"  },
-	{ E_IDIV, OT_REG_REG_REG,     "idiv" },
-	{ E_IMUL, OT_REG_REG_REG,     "imul" },
-	{ E_AND,  OT_REG_REG_REG,     "and"  },
-	{ E_XOR,  OT_REG_REG_REG,     "xor"  },
-	{ E_SHR,  OT_REG_REG_REG,     "shr"  },
-	{ E_JMA,  _OT_INVAL,          "jma"  },
-	{ E_JMBE, _OT_INVAL,          "jmbe" },
-	{ E_ADC,  OT_REG_REG_REG,     "adc"  },
-	{ E_SBB,  OT_REG_REG_REG,     "sbb"  },
-	{ E_CMP,  OT_REG_REG,         "cmp"  },
-	{ E_MOVR, OT_REG_REG,         "movr" },
-	{ E_MOVO, OT_REG_OPERAND,     "movo" }
+	{ E_ADD,  EARGS_A_B_R, "add"  },
+	{ E_NAND, EARGS_A_B_R, "nand" },
+	{ E_LW,   EARGS_A_B, "lw"   },
+	{ E_SW,   EARGS_A_B, "sw"   },
+	{ E_BEQ,  EARGS_A_B_OFFSET, "beq"  },
+	{ E_JALR, EARGS_A_B_R, "jalr" },
+	{ E_HALT, EARGS_NONE,  "halt" },
+	{ E_NOOP, EARGS_NONE,  "noop" },
+	{ E_INC,  EARGS_A, "inc"  },
+	{ E_IDIV, EARGS_A_B_R, "idiv" },
+	{ E_IMUL, EARGS_A_B_R, "imul" },
+	{ E_AND,  EARGS_A_B_R, "and"  },
+	{ E_XOR,  EARGS_A_B_R, "xor"  },
+	{ E_SHR,  EARGS_A_B_R, "shr"  },
+	{ E_JMA,  EARGS_A_B_OFFSET, "jma"  },
+	{ E_JMBE, EARGS_A_B_OFFSET, "jmbe" },
+	{ E_ADC,  EARGS_A_B_R, "adc"  },
+	{ E_SBB,  EARGS_A_B_R, "sbb"  },
+	{ E_CMP,  EARGS_A_B, "cmp"  }
 };
 
 using ERegister = u16;
@@ -147,20 +144,14 @@ struct EBusBase
 	[[nodiscard]] u32
 		get_value()
 	{
-		u32 ret = 0;
-		ret ^= (data[0] << 16);
-		ret ^= (data[1] << 8);
-		ret ^= (data[2]);
-		return ret;
+		return BITS_MASKED_COPY(data, BITS_26_MASK);
 	}
 
 	void
 		set_value(u32 v)
 	{
-		data[0] = BITS_MASKED_COPY(v, 0b0000'0000'1111'1111'0000'0000'0000'0000) >> 16;
-		data[1] = BITS_MASKED_COPY(v, 0b0000'0000'0000'0000'1111'1111'0000'0000) >> 8;
-		data[2] = BITS_MASKED_COPY(v, 0b0000'0000'0000'0000'0000'0000'1111'1111);
-		u32 overflow = BITS_MASKED_COPY(v, 0b1111'1111'0000'0000'0000'0000'0000'0000);
+		data = BITS_MASKED_COPY(v, BITS_26_MASK);
+		u32 overflow = BITS_MASKED_COPY(v, 0b1111'1100'0000'0000'0000'0000'0000'0000);
 	}
 
 	u32 operator++(int)
@@ -170,7 +161,7 @@ struct EBusBase
 		return inc_val;
 	}
 
-	u8 data[3] = { 0 };
+	u32 data = 0;
 };
 
 
@@ -179,85 +170,100 @@ struct EInstruction : EBusBase
 	[[ no_discard ]] u32
 		get_opcode()
 	{
-		return BITS_MASKED_COPY(get_value(), 0b11111 << 19) >> 19;
+		return BITS_MASKED_COPY(get_value(), 0b11111 << 22) >> 22;
+	}
+
+	[[ no_discard ]] std::pair<u32, bool>
+		get_reg_a()
+	{
+		return { BITS_MASKED_COPY(get_value(), 0b1111 << 17) >> 17, BITS_MASKED_COPY(get_value(), 0b1 << 21) >> 21 };
+	}
+
+	[[ no_discard ]] std::pair<u32, bool>
+		get_reg_b()
+	{
+		return { BITS_MASKED_COPY(get_value(), 0b1111 << 12) >> 12, BITS_MASKED_COPY(get_value(), 0b1 << 16) >> 16 };
 	}
 
 	[[ no_discard ]] u32
 		get_reg_r()
 	{
-		return BITS_MASKED_COPY(get_value(), 0b111 << 16) >> 16;
-	}
-
-	[[ no_discard ]] u32
-		get_reg_a()
-	{
-		return BITS_MASKED_COPY(get_value(), 0b111 << 13) >> 13;
-	}
-
-	[[ no_discard ]] u32
-		get_reg_b()
-	{
-		return BITS_MASKED_COPY(get_value(), 0b111);
+		return BITS_MASKED_COPY(get_value(), 0b1111);
 	}
 
 	[[ no_discard ]] u32
 		get_operand()
 	{
-		return BITS_MASKED_COPY(get_value(), BITS_16_MASK);
+		return BITS_MASKED_COPY(get_value(), BITS_12_MASK);
 	}
 
-	static EInstruction create_ra_rb_rr(u32 opcode, u32 ra, u32 rb, u32 rr)
+	static EInstruction create_ra_rb_rr(u32 opcode, u32 ra, u32 rb, u32 rr, u32 ra_direct = 0, u32 rb_direct = 0)
 	{
 		ASSERT(IN_RANGE_E(opcode, 0, 0b11111));
-		ASSERT(IN_RANGE_E(ra, 0, 0b111));
-		ASSERT(IN_RANGE_E(rb, 0, 0b111));
-		ASSERT(IN_RANGE_E(rr, 0, 0b111));
+		ASSERT(IN_RANGE_E(ra, 0, 0b1111));
+		ASSERT(IN_RANGE_E(rb, 0, 0b1111));
+		ASSERT(IN_RANGE_E(rr, 0, 0b1111));
+		ASSERT(IN_RANGE_E(ra_direct, 0, 0b1));
+		ASSERT(IN_RANGE_E(rb_direct, 0, 0b1));
 
 		u32 to_set = 0;
 
+		ra_direct = ra_direct << 21;
+		to_set ^= ra_direct;
+
+		rb_direct = rb_direct << 16;
+		to_set ^= rb_direct;
+
 		//set_opcode
-		opcode = opcode << 19;
+		opcode = opcode << 22;
 		to_set ^= opcode;
 
-		//set_reg_r
-		rr = rr << 16;
-		to_set ^= rr;
-
 		//set_reg_a
-		ra = ra << 13;
+		ra = ra << 17;
 		to_set ^= ra;
 
-		//set_reg_b
+		//set_reg_r
+		rb = rb << 12;
 		to_set ^= rb;
+
+		//set_reg_r
+		to_set ^= rr;
 
 		EInstruction ret = {};
 		ret.set_value(to_set);
 		return ret;
 	}
 
-	static EInstruction create_ra_operand_rr(u32 opcode, u32 ra, u32 operand, u32 rr)
+	static EInstruction create_ra_rb_offset(u32 opcode, u32 ra, u32 rb, u32 offset, u32 ra_direct = 0, u32 rb_direct = 0)
 	{
-		ASSERT(IN_RANGE_E(operand, 0, BITS_16_MASK));
+		ASSERT(IN_RANGE_E(offset, 0, BITS_12_MASK));
 		ASSERT(IN_RANGE_E(opcode, 0, 0b11111));
-		ASSERT(IN_RANGE_E(ra, 0, 0b111));
-		ASSERT(IN_RANGE_E(rr, 0, 0b111));
+		ASSERT(IN_RANGE_E(ra, 0, 0b1111));
+		ASSERT(IN_RANGE_E(rb, 0, 0b1111));
+		ASSERT(IN_RANGE_E(ra_direct, 0, 0b1));
+		ASSERT(IN_RANGE_E(rb_direct, 0, 0b1));
 
 		u32 to_set = 0;
 
+		ra_direct = ra_direct << 21;
+		to_set ^= ra_direct;
+
+		rb_direct = rb_direct << 16;
+		to_set ^= rb_direct;
+
 		//set_opcode
-		opcode = opcode << 19;
+		opcode = opcode << 22;
 		to_set ^= opcode;
 
-		//set_reg_r
-		rr = rr << 16;
-		to_set ^= rr;
-
 		//set_reg_a
-		ra = ra << 13;
+		ra = ra << 17;
 		to_set ^= ra;
 
-		//set_reg_b
-		to_set ^= operand;
+		//set_reg_r
+		rb = rb << 12;
+		to_set ^= rb;
+
+		to_set ^= offset;
 
 		LOG("Curr: %s", std::bitset<32>(to_set).to_string().c_str());
 
@@ -267,13 +273,14 @@ struct EInstruction : EBusBase
 	}
 
 	/*
-	//                                    ----operand---
-	//                                    |||| |||| ||||
-	//                    operand    regA |||| |||| ||||
-	//                     |||| |    |||  |||| |||| ||||
+	//                     rr_direct-      ----operand---
+	//                               |     |||| |||| ||||
+	//                 operand       |     |||| |||| ||||
+	//                  || |||       |     |||| |||| ||||
 	u32 data = 0b0000'0000'0000'0000'0000'0000'0000'0000';
-	//                           |||                 |||
-	//                           regR-dest          regB
+	//                        | ||||  ||| |         ||||
+	//                        | regA  regB          regR
+	//              ra_direct-
 	*/
 };
 
@@ -288,7 +295,7 @@ struct EState
 	EInstruction command_register_;
 	ERegister program_counter_;
 
-	ERegister r_[8];
+	ERegister r_[REGISTERS_COUNT];
 	EFlags f_;
 
 	EInstruction ram_[RAM_SIZE / sizeof(EInstruction)] = {};
@@ -349,6 +356,8 @@ emu_load_next(
 	return SUCCESS;
 }
 
+#define EARG(x) ((x).second ? (x).first : &s->r_[(x).first])
+
 Status
 emu_process(
 	EState& state)
@@ -356,56 +365,81 @@ emu_process(
 	const auto emu_add = [](EState* s) {
 		// destReg = regA + regB
 		auto i = s->command_register_;
-		auto dest = i.get_reg_r();
-		auto rai = i.get_reg_a();
-		auto rbi = i.get_reg_b();
-		s->r_[dest] = s->r_[rai] + s->r_[rbi];
+		auto rr = i.get_reg_r();
+		auto ra = i.get_reg_a();
+		auto rb = i.get_reg_b();
+
+		auto arg_a = ra.second ? ra.first : s->r_[ra.first];
+		auto arg_b = rb.second ? rb.first : s->r_[rb.first];
+		auto arg_r = &s->r_[rr];
+
+		*arg_r = arg_a + arg_b;
 	};
 
 	const auto emu_nand = [](EState* s) {
 		// destReg = !(regA && regB)
 		auto i = s->command_register_;
-		auto dest = i.get_reg_r();
-		auto rai = i.get_reg_a();
-		auto rbi = i.get_reg_b();
-		s->r_[dest] = ~(s->r_[rai] & s->r_[rbi]);
+
+		auto rr = i.get_reg_r();
+		auto ra = i.get_reg_a();
+		auto rb = i.get_reg_b();
+
+		auto arg_a = ra.second ? ra.first : s->r_[ra.first];
+		auto arg_b = rb.second ? rb.first : s->r_[rb.first];
+		auto arg_r = &s->r_[rr];
+
+		*arg_r = ~(arg_a & arg_b);
 	};
 
 	const auto emu_lw = [](EState* s) {
 		// destReg = load from memory by OPERAND/LABEL
 		auto i = s->command_register_;
-		auto dest = i.get_reg_r();
-		auto operand = i.get_operand();
-		s->r_[dest] = (ERegister)s->ram_[operand].get_value();
+		auto ra = i.get_reg_a();
+		auto rb = i.get_reg_b();
+		auto offset = i.get_operand();
+		auto arg_a = ra.second ? ra.first : s->r_[ra.first];
+		auto arg_b = rb.second ? rb.first : s->r_[rb.first];
+		s->r_[arg_a] = (ERegister)s->ram_[arg_b + offset].get_value();
 	};
 
 	const auto emu_sw = [](EState* s) {
 		// save to memory from regR by OPERAND/LABEL
 		auto i = s->command_register_;
-		auto rri = i.get_reg_r();
-		auto operand = i.get_operand();
-		s->ram_[operand].set_value(s->r_[rri]);
+		auto ra = i.get_reg_a();
+		auto rb = i.get_reg_b();
+		auto offset = i.get_operand();
+		auto arg_a = ra.second ? ra.first : s->r_[ra.first];
+		auto arg_b = rb.second ? rb.first : s->r_[rb.first];
+		s->ram_[arg_a + offset].set_value(s->r_[arg_b]);
 	};
 
 	const auto emu_beq = [](EState* s) {
 		// if regR == regA goto ProgramCounter + 1 + shiftamount, in PC is saved addr of current instruction
 		auto i = s->command_register_;
-		auto rri = i.get_reg_r();
-		auto rai = i.get_reg_a();
-		auto operand = i.get_operand();
-		if (s->r_[rri] == s->r_[rai])
-			s->program_counter_ += operand;
+		auto ra = i.get_reg_a();
+		auto rb = i.get_reg_b();
+		auto offset = i.get_operand();
+		auto arg_a = ra.second ? ra.first : s->r_[ra.first];
+		auto arg_b = rb.second ? rb.first : s->r_[rb.first];
+		if (arg_a == arg_b)
+			s->program_counter_ += offset;
 	};
 
 	const auto emu_jalr = [](EState* s) {
 		// saves PC+1 into regR. in PC is saved addr of current instruction. 
 		// Goto regA addr. if regR and regA is same register then first write PC + 1 and then goto PC + 1.
 		auto i = s->command_register_;
-		auto rri = i.get_reg_r();
-		auto rai = i.get_reg_a();
+		auto ra = i.get_reg_a();
+		auto rb = i.get_reg_b();
+		auto offset = i.get_operand();
+		auto arg_b = rb.second ? rb.first : s->r_[rb.first];
 		
-		s->r_[rri] = s->program_counter_ + 1;
-		s->program_counter_ = s->r_[rai];
+		if (ra.second)
+			s->ram_[ra.first].set_value((ERegister)(s->program_counter_ + 1));
+		else
+			s->ram_[s->r_[ra.first]].set_value((ERegister)(s->program_counter_ + 1));
+
+		s->program_counter_ = arg_b;
 		s->no_pc_increment_ = true;
 	};
 
@@ -420,81 +454,111 @@ emu_process(
 	const auto emu_inc = [](EState* s) {
 		// -INC regA; increment by one
 		auto i = s->command_register_;
-		auto rri = i.get_reg_r();
-		s->r_[rri]++;
+		auto ra = i.get_reg_a();
+		if (ra.second)
+			s->ram_[ra.first]++;
+		else
+			s->r_[ra.first]++;
 	};
 
 	const auto emu_idiv = [](EState* s) {
 		// * -IDIV regA regB destReg; sign division destReg = regA / regB
 		auto i = s->command_register_;
-		auto dest = i.get_reg_r();
-		auto rai = i.get_reg_a();
-		auto rbi = i.get_reg_b();
-		s->r_[dest] = s->r_[rai] / s->r_[rbi];
+
+		auto rr = i.get_reg_r();
+		auto ra = i.get_reg_a();
+		auto rb = i.get_reg_b();
+
+		auto arg_a = ra.second ? ra.first : s->r_[ra.first];
+		auto arg_b = rb.second ? rb.first : s->r_[rb.first];
+		auto arg_r = &s->r_[rr];
+
+		*arg_r = arg_a / arg_b;
 	};
 
 	const auto emu_imul = [](EState* s) {
 		// * -IMUL regA regB destReg; sign multiplication destReg = regA * regB
 		auto i = s->command_register_;
-		auto dest = i.get_reg_r();
-		auto rai = i.get_reg_a();
-		auto rbi = i.get_reg_b();
-		s->r_[dest] = s->r_[rai] * s->r_[rbi];
+		auto rr = i.get_reg_r();
+		auto ra = i.get_reg_a();
+		auto rb = i.get_reg_b();
+
+		auto arg_a = ra.second ? ra.first : s->r_[ra.first];
+		auto arg_b = rb.second ? rb.first : s->r_[rb.first];
+		auto arg_r = &s->r_[rr];
+
+		*arg_r = arg_a * arg_b;
 	};
 
 	const auto emu_and = [](EState* s) {
 		// *-AND regA regB destReg; destReg = regA & regB
 		auto i = s->command_register_;
-		auto dest = i.get_reg_r();
-		auto rai = i.get_reg_a();
-		auto rbi = i.get_reg_b();
-		s->r_[dest] = s->r_[rai] & s->r_[rbi];
+		auto rr = i.get_reg_r();
+		auto ra = i.get_reg_a();
+		auto rb = i.get_reg_b();
+
+		auto arg_a = ra.second ? ra.first : s->r_[ra.first];
+		auto arg_b = rb.second ? rb.first : s->r_[rb.first];
+		auto arg_r = &s->r_[rr];
+
+		*arg_r = arg_a & arg_b;
 	};
 	const auto emu_xor = [](EState* s) {
 		// * -XOR regA regB destReg; addition by module 2: destReg = regA # regB
 		auto i = s->command_register_;
-		auto dest = i.get_reg_r();
-		auto rai = i.get_reg_a();
-		auto rbi = i.get_reg_b();
-		s->r_[dest] = s->r_[rai] ^ s->r_[rbi];
+		auto rr = i.get_reg_r();
+		auto ra = i.get_reg_a();
+		auto rb = i.get_reg_b();
+
+		auto arg_a = ra.second ? ra.first : s->r_[ra.first];
+		auto arg_b = rb.second ? rb.first : s->r_[rb.first];
+		auto arg_r = &s->r_[rr];
+
+		*arg_r = arg_a ^ arg_b;
 	};
 	const auto emu_shr = [](EState* s) {
 		// * -SHR regA regB destReg; logic shift right destReg = regA >> regB
 		auto i = s->command_register_;
-		auto dest = i.get_reg_r();
-		auto rai = i.get_reg_a();
-		auto rbi = i.get_reg_b();
-		s->r_[dest] = s->r_[rai] >> s->r_[rbi];
-	};
-	
-	const auto emu_movr = [](EState* s) {
-		auto src = s->command_register_.get_reg_a();
-		auto dest = s->command_register_.get_reg_r();
-		s->r_[dest] = s->r_[src];
-	};
+		auto rr = i.get_reg_r();
+		auto ra = i.get_reg_a();
+		auto rb = i.get_reg_b();
 
-	const auto emu_movo = [](EState* s) {
-		auto dest = s->command_register_.get_reg_r();
-		auto val = s->command_register_.get_operand();
-		s->r_[dest] = (u16)val;
+		auto arg_a = ra.second ? ra.first : s->r_[ra.first];
+		auto arg_b = rb.second ? rb.first : s->r_[rb.first];
+		auto arg_r = &s->r_[rr];
+
+		*arg_r = arg_a >> arg_b;
 	};
 
 	const auto emu_adc = [](EState* s) {
 		// -ADC regA regB destReg; addition with CF : destReg = regA + regB + CF
 		auto i = s->command_register_;
-		auto dest = i.get_reg_r();
-		auto rai = i.get_reg_a();
-		auto rbi = i.get_reg_b();
-		s->r_[dest] = s->r_[rai] + s->r_[rbi] + s->f_.СF;
+
+		auto rr = i.get_reg_r();
+		auto ra = i.get_reg_a();
+		auto rb = i.get_reg_b();
+
+		auto arg_a = ra.second ? ra.first : s->r_[ra.first];
+		auto arg_b = rb.second ? rb.first : s->r_[rb.first];
+		auto arg_r = &s->r_[rr];
+
+		*arg_r = arg_a + arg_b + s->f_.СF;
+
 	};
 
 	const auto emu_sbb = [](EState* s) {
 		// * -SBB regA regB destReg; subtraction with CF : destReg = regA - regB - СF
 		auto i = s->command_register_;
-		auto dest = i.get_reg_r();
-		auto rai = i.get_reg_a();
-		auto rbi = i.get_reg_b();
-		s->r_[dest] = s->r_[rai] - s->r_[rbi] - s->f_.СF;
+
+		auto rr = i.get_reg_r();
+		auto ra = i.get_reg_a();
+		auto rb = i.get_reg_b();
+
+		auto arg_a = ra.second ? ra.first : s->r_[ra.first];
+		auto arg_b = rb.second ? rb.first : s->r_[rb.first];
+		auto arg_r = &s->r_[rr];
+
+		*arg_r = arg_a - arg_b - s->f_.СF;
 	};
 
 	const auto emu_cmp = [](EState* s) {
@@ -504,11 +568,15 @@ emu_process(
 		// 	* regA = regB 0  0  1
 		// 	* regA > regB 0  0  0
 		auto i = s->command_register_;
-		auto rri = i.get_reg_r();
-		auto rai = i.get_reg_a();
-		if (s->r_[rri] < s->r_[rai])
+		auto ra = i.get_reg_a();
+		auto rb = i.get_reg_b();
+
+		auto arg_a = ra.second ? ra.first : s->r_[ra.first];
+		auto arg_b = rb.second ? rb.first : s->r_[rb.first];
+
+		if (arg_a < arg_b)
 			s->f_ = { .СF = true, .SF = true, .ZF = false };
-		else if (s->r_[rri] == s->r_[rai])
+		else if (arg_a == arg_b)
 			s->f_ = { .СF = false, .SF = false, .ZF = true };
 		else
 			s->f_ = { .СF = false, .SF = false, .ZF = false };
@@ -534,9 +602,7 @@ emu_process(
 		{ E_JMBE, emu_nop  },
 		{ E_ADC,  emu_adc  },
 		{ E_SBB,  emu_sbb  },
-		{ E_CMP,  emu_cmp  },
-		{ E_MOVR, emu_movr },
-		{ E_MOVO, emu_movo }
+		{ E_CMP,  emu_cmp  }
 	};
 
 	auto i = state.command_register_;
