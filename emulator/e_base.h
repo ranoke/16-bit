@@ -55,7 +55,7 @@
 #define BITS_12_MASK (0b1111'1111'1111)
 #define BITS_16_MASK (0b1111'1111'1111'1111)
 #define BITS_24_MASK (0b1111'1111'1111'1111'1111'1111)
-#define BITS_26_MASK (0b0011'1111'1111'1111'1111'1111'1111)
+#define BITS_27_MASK (0b0111'1111'1111'1111'1111'1111'1111)
 #define BITS_MASKED_COPY(B, M) ((B) & (M))
 #define BITS_MASKED_COPY_DEST_UNCHENGED(OUT, B, M) (((B) & (M)) | ((OUT) & ~(M)))
 
@@ -119,8 +119,8 @@ struct EOpcodeDesc
 static constexpr EOpcodeDesc opcode_descriptions[] = {
 	{ E_ADD,  EARGS_A_B_R, "add"  },
 	{ E_NAND, EARGS_A_B_R, "nand" },
-	{ E_LW,   EARGS_A_B, "lw"   },
-	{ E_SW,   EARGS_A_B, "sw"   },
+	{ E_LW,   EARGS_A_B_OFFSET, "lw" },
+	{ E_SW,   EARGS_A_B_OFFSET, "sw" },
 	{ E_BEQ,  EARGS_A_B_OFFSET, "beq"  },
 	{ E_JALR, EARGS_A_B_R, "jalr" },
 	{ E_HALT, EARGS_NONE,  "halt" },
@@ -144,13 +144,13 @@ struct EBusBase
 	[[nodiscard]] u32
 		get_value()
 	{
-		return BITS_MASKED_COPY(data, BITS_26_MASK);
+		return BITS_MASKED_COPY(data, BITS_27_MASK);
 	}
 
 	void
 		set_value(u32 v)
 	{
-		data = BITS_MASKED_COPY(v, BITS_26_MASK);
+		data = BITS_MASKED_COPY(v, BITS_27_MASK);
 		u32 overflow = BITS_MASKED_COPY(v, 0b1111'1100'0000'0000'0000'0000'0000'0000);
 	}
 
@@ -214,9 +214,13 @@ struct EInstruction : EBusBase
 		rb_direct = rb_direct << 16;
 		to_set ^= rb_direct;
 
+		//LOG("Exec: %s", std::bitset<32>(to_set).to_string().c_str());
+
 		//set_opcode
 		opcode = opcode << 22;
 		to_set ^= opcode;
+
+		//LOG("Exec: %s", std::bitset<32>(to_set).to_string().c_str());
 
 		//set_reg_a
 		ra = ra << 17;
@@ -273,20 +277,22 @@ struct EInstruction : EBusBase
 	}
 
 	/*
-	//                     rr_direct-      ----operand---
-	//                               |     |||| |||| ||||
-	//                 operand       |     |||| |||| ||||
-	//                  || |||       |     |||| |||| ||||
-	u32 data = 0b0000'0000'0000'0000'0000'0000'0000'0000';
-	//                        | ||||  ||| |         ||||
-	//                        | regA  regB          regR
+	//                     rr_direct-     ----operand---
+	//                            |      |||| |||| ||||
+	//                operand     |      |||| |||| ||||
+	//                ||| ||      |      |||| |||| ||||
+	u32 data =      0b000'0000'0000'0000'0000'0000'0000';
+	//                      || |||  ||||           ||||
+	//                      |regA   regB           regR
 	//              ra_direct-
 	*/
 };
 
 struct EFlags
 {
-	bool СF, SF, ZF;
+	u8 СF_;
+	u8 SF_;
+	u8 ZF_;
 };
 
 
@@ -369,8 +375,8 @@ emu_process(
 		auto ra = i.get_reg_a();
 		auto rb = i.get_reg_b();
 
-		auto arg_a = ra.second ? ra.first : s->r_[ra.first];
-		auto arg_b = rb.second ? rb.first : s->r_[rb.first];
+		auto arg_a = ra.second ? s->ram_[ra.first].get_value() : s->r_[ra.first];
+		auto arg_b = rb.second ? s->ram_[rb.first].get_value() : s->r_[rb.first];
 		auto arg_r = &s->r_[rr];
 
 		*arg_r = arg_a + arg_b;
@@ -397,7 +403,7 @@ emu_process(
 		auto ra = i.get_reg_a();
 		auto rb = i.get_reg_b();
 		auto offset = i.get_operand();
-		auto arg_a = ra.second ? ra.first : s->r_[ra.first];
+		auto arg_a = ra.first;
 		auto arg_b = rb.second ? rb.first : s->r_[rb.first];
 		s->r_[arg_a] = (ERegister)s->ram_[arg_b + offset].get_value();
 	};
@@ -408,9 +414,9 @@ emu_process(
 		auto ra = i.get_reg_a();
 		auto rb = i.get_reg_b();
 		auto offset = i.get_operand();
-		auto arg_a = ra.second ? ra.first : s->r_[ra.first];
+		auto arg_a = ra.first;
 		auto arg_b = rb.second ? rb.first : s->r_[rb.first];
-		s->ram_[arg_a + offset].set_value(s->r_[arg_b]);
+		s->ram_[arg_a + offset].set_value(arg_b);
 	};
 
 	const auto emu_beq = [](EState* s) {
@@ -542,7 +548,7 @@ emu_process(
 		auto arg_b = rb.second ? rb.first : s->r_[rb.first];
 		auto arg_r = &s->r_[rr];
 
-		*arg_r = arg_a + arg_b + s->f_.СF;
+		*arg_r = arg_a + arg_b + s->f_.СF_;
 
 	};
 
@@ -558,7 +564,7 @@ emu_process(
 		auto arg_b = rb.second ? rb.first : s->r_[rb.first];
 		auto arg_r = &s->r_[rr];
 
-		*arg_r = arg_a - arg_b - s->f_.СF;
+		*arg_r = arg_a - arg_b - s->f_.СF_;
 	};
 
 	const auto emu_cmp = [](EState* s) {
@@ -575,11 +581,11 @@ emu_process(
 		auto arg_b = rb.second ? rb.first : s->r_[rb.first];
 
 		if (arg_a < arg_b)
-			s->f_ = { .СF = true, .SF = true, .ZF = false };
+			s->f_ = { .СF_ = true, .SF_ = true, .ZF_ = false };
 		else if (arg_a == arg_b)
-			s->f_ = { .СF = false, .SF = false, .ZF = true };
+			s->f_ = { .СF_ = false, .SF_ = false, .ZF_ = true };
 		else
-			s->f_ = { .СF = false, .SF = false, .ZF = false };
+			s->f_ = { .СF_ = false, .SF_ = false, .ZF_ = false };
 	};
 
 	using instruction_executor_t = void(*)(EState*);
@@ -613,7 +619,9 @@ emu_process(
 	ASSERT(IN_RANGE_E(opcode, 0, __ECOMMAND_LAST) && "Opcode is not found!");
 	ASSERT(IN_RANGE_E(state.program_counter_, 0, ARRAY_SIZE(state.ram_)) && "Error: program_counter inval");
 
-	cmd_executor.at(opcode)(&state);
+	auto it = cmd_executor.at(opcode);
+
+	it(&state);
 
 	if (!state.no_pc_increment_)
 		state.program_counter_++;

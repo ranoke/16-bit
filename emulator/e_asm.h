@@ -292,6 +292,10 @@ emu_asm(
 			ASSERT(false && "too much code!");
 	}
 
+
+	return SUCCESS;
+
+
 	LOG("Compilled: ");
 	for (size_t i = 0; i < ARRAY_SIZE(compiller_data.compilled_code); i++)
 	{
